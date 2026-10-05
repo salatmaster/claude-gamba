@@ -333,8 +333,9 @@ function stubs(on: On, initial?: Partial<Save>, usage: TurnUsage | null = null) 
 }
 
 // One model request of a turn, read to its end as the engine reads it.
+// A subagent's run is a turn of its own, under its own id.
 async function step($: Engine, agentId?: string) {
-  const stream = $.turn.step({ turnId: 't', index: 0, model: 'claude-test', messageCount: 1, ...(agentId ? { agentId } : {}) })
+  const stream = $.turn.step({ turnId: agentId ?? 't', index: 0, model: 'claude-test', messageCount: 1, ...(agentId ? { agentId } : {}) })
   let chunk = await stream.next()
   while (chunk.done !== true) chunk = await stream.next()
   return chunk.value
@@ -375,21 +376,29 @@ test(
     expect(await says(en.agentStart)).toBe(true)
     expect((await step($)).answer).toBe('ok')
     expect(saved().chips).toBe(3)
-    await step($, 'subagent-1') // a subagent's request counts too, and hits the cap
-    expect(saved().chips).toBe(5)
-    await $.turn.complete({ ...complete(90_000), agentId: 'subagent-1' })
+    await step($)
+    expect(saved().chips).toBe(5) // the cap holds for the turn
+    await step($, 'subagent-1') // a subagent's run is a turn with a cap of its own
+    expect(saved().chips).toBe(8)
+    await $.turn.complete({ ...complete(90_000), turnId: 'subagent-1', agentId: 'subagent-1' })
     expect(saved().week.waitedMs).toBe(0)
     await $.turn.complete(complete(90_000))
-    expect(saved().week).toMatchObject({ tokens: 6000, waitedMs: 90_000 })
+    expect(saved().week).toMatchObject({ tokens: 9000, waitedMs: 90_000 })
     // The agent line reports the deposit, then nudges back to work.
-    expect(await says(en.dep.map(phrase => fill(en, phrase, { chips: 5, tokens: 6000 })))).toBe(true)
+    expect(await says(en.dep.map(phrase => fill(en, phrase, { chips: 8, tokens: 9000 })))).toBe(true)
     expect(await says(en.agentDone)).toBe(false)
     await clock.advance(5000)
     expect(await says(en.agentDone)).toBe(true)
 
+    // A background workflow's agents step on after the turn that started
+    // them ended, each one up to its own cap.
+    await step($, 'workflow-1')
+    await step($, 'workflow-2')
+    expect(saved().chips).toBe(14)
+
     await $.turn.start({ turnId: 't', text: 'again' }) // a new turn, a new cap
     await step($)
-    expect(saved().chips).toBe(8)
+    expect(saved().chips).toBe(17)
   },
 )
 

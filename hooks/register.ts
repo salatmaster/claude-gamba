@@ -40,7 +40,11 @@ const TYPED = ['composer', 'bridge', 'sdk']
 const SETTINGS = { rate: [1, 1_000_000], cap: [1, 1000], warn: [1, 100] } as const
 let save: Save = fresh() // the store's copy as of the last load
 let queue: Promise<unknown> = Promise.resolve()
-let turn = { chips: 0, tokens: 0 } // deposited by the running turn
+let turn = { chips: 0, tokens: 0 } // deposited since the person's turn started, subagents' included
+// Chips each running turn has deposited, by turnId: the cap holds per agent
+// turn. One shared count let a background workflow's agents hit the main
+// turn's cap and deposit nothing for the rest of the run.
+const earned = new Map<string, number>()
 let at: number[] = fresh().rest // where on the strip each reel is, a fraction while it moves
 let hits = [false, false, false] // the reels that won the last spin
 let drawn: Parts | undefined // the pixel cabinet the pane drew last; absent, it drew text
@@ -328,7 +332,10 @@ export const register: Register = on => {
       const tokens = burned(result.usage)
       // The room under the cap is read inside the queue: subagents step in parallel.
       await mutate($, s => {
-        turn.chips += deposit(s, tokens, s.rate, s.cap - turn.chips)
+        const had = earned.get(e.turnId) ?? 0
+        const chips = deposit(s, tokens, s.rate, s.cap - had)
+        earned.set(e.turnId, had + chips)
+        turn.chips += chips
         turn.tokens += tokens
       })
     }
@@ -336,6 +343,7 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    earned.delete(e.turnId)
     // A subagent's turn: its tokens were deposited step by step already.
     if (e.agentId !== undefined) return next(e)
     offer = '' // nothing left to wait for
